@@ -1,0 +1,10 @@
+pydantic>=2.8
+regex>=2024.5
+networkx>=3.3
+python-dotenv>=1.0
+langchain>=0.3
+langchain-core>=0.3
+langchain-community>=0.3
+langchain-ollama>=0.3
+spacy>=3.7
+nltk>=3.9
