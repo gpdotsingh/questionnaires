@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: qapipeline
+Version: 0.1.0
+Summary: Modular QA pipeline
+Requires-Python: >=3.10
