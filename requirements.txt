@@ -9,10 +9,10 @@ langchain-ollama>=0.3
 spacy>=3.7
 nltk>=3.9
 chromadb>=0.5
-langchain-community>=0.3
 langchain-text-splitters>=0.3
 sentence-transformers>=3.0   # (skip if you’ll use Ollama embeddings instead)
 pypdf>=4
 pymupdf>=1.24
-langchain-ollama>=0.3        # only if you’ll use Ollama embeddings
-langchain-openai>=0.3 
+langchain-openai>=0.3
+tiktoken==0.11.0
+
