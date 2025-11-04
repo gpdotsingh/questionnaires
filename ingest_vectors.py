@@ -128,7 +128,7 @@ def ingest(collection: Optional[str], csv: Optional[str], pdf_dir: Optional[str]
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Ingest CSV/PDF/TXT into Chroma vectors DB.")
+    ap = argparse.ArgumentParser(description="Ingest CSV/PDF/TXT into Chroma vector DB.")
     ap.add_argument("--collection", help="Collection name (optional).")
     ap.add_argument("--csv", help="Path to a CSV file to ingest.")
     ap.add_argument("--pdf-dir", help="Directory of PDFs to ingest.")
