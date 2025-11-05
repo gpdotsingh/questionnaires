@@ -19,7 +19,7 @@ class SplitPlan(BaseModel):
     ordered_steps: List[SubQuestion]
     graph_edges: List[Tuple[str, str]]
     simplification: List[str]
-    used_llm: bool = False
+    used_llm: bool = True
 
 
 # Orchestrator input = SplitPlan

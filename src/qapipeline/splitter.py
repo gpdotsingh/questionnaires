@@ -1,33 +1,65 @@
 # python
 from __future__ import annotations
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional
 import networkx as nx
 
 from .contracts import SubQuestion, SplitPlan
 
-# Strong boundaries (avoid '.' to keep e.g./initials/decimals intact)
+# -------------------------
+# Normalization helpers
+# -------------------------
+WS = re.compile(r"\s+")
+def _norm(s: str) -> str:
+    return WS.sub(" ", s).strip()
+
+def _lower(s: str) -> str:
+    return _norm(s).lower()
+
+# -------------------------
+# Domain vocabulary (extend as you like)
+# -------------------------
+METRIC_SYNONYMS: Dict[str, List[str]] = {
+    "total_donation_amount": [
+        "total donation amount", "total amount donated", "donation amount",
+        "sum of donations", "total raised", "total amount", "donation totals",
+        "donation total", "total donations", "total giving"
+    ],
+    "engagement_score": [
+        "engagement score", "average engagement", "mean engagement", "avg engagement",
+        "engagement", "engagement index"
+    ],
+    "donor_count": [
+        "donor count", "count of donors", "how many donors", "number of donors", "unique donors"
+    ],
+    "total_gifts": [
+        "total gifts", "gift count", "number of gifts", "gifts total"
+    ],
+}
+
+OPERATIONS: Dict[str, List[str]] = {
+    "trend": ["trend", "over time", "time series", "time-series"],
+    "decline": ["decline", "decreasing", "drop", "downturn", "going down", "falling"],
+    "increase": ["increase", "growing", "rising", "going up"],
+    "compare": ["compare", "vs", "versus"],
+    "group_by_state": ["by state", "across states", "by states"],
+}
+
+TIME_GRAINS: Dict[str, List[str]] = {
+    "monthly": ["per month", "monthly", "by month"],
+    "weekly": ["per week", "weekly", "by week"],
+    "yearly": ["per year", "yearly", "annually", "annual", "by year"],
+}
+
+# -------------------------
+# Heuristic splitting helpers
+# -------------------------
 SPLIT_PUNCT = re.compile(r"[;:?!]")
-# Step joiners that indicate sequence; do not include bare "and"
 JOINERS = re.compile(
     r"\b(?:and then|then|next|after that|afterwards|subsequently|first|second|third|before|using|based on|given|with|by)\b",
     re.I,
 )
-# Input-finder detector
 INPUT_FINDER_PAT = re.compile(r"\b(find|fetch|lookup|extract|get|identify|search)\b.*\b(from|in|via|using)\b", re.I)
-
-# Metric/field terms that commonly appear as parallel items joined by "and"/"&"
-METRIC_TERMS = [
-    "total donation amount", "donation total", "total amount donated", "total amount", "total donations",
-    "engagement score", "engagement",
-    "donor count", "count donors", "how many donors",
-    "median per-donor total", "median donation total", "median total",
-]
-
-
-def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", s).strip()
-
 
 def _pre_normalize(text: str) -> str:
     t = text
@@ -36,9 +68,7 @@ def _pre_normalize(text: str) -> str:
     t = t.replace("\u2013", "-").replace("\u2014", "-")
     return t
 
-
 def _maybe_split_compare(seg: str) -> List[str]:
-    """Split 'X vs Y' or 'X versus Y' into two symmetric clauses with a shared action if present."""
     m = re.search(r"\b(vs\.?|versus)\b", seg, flags=re.I)
     if not m:
         return [seg]
@@ -53,16 +83,15 @@ def _maybe_split_compare(seg: str) -> List[str]:
         return [_norm(prefix + left_obj), _norm(prefix + right)]
     return [left, right]
 
-
 def _maybe_split_metrics_with_and(seg: str) -> List[str]:
-    """If 'X and Y' (or '&') where both sides contain metric terms, split into two clauses, keeping shared prefix."""
     lower = seg.lower()
     splitter = " and " if " and " in lower else (" & " if " & " in lower else None)
     if not splitter:
         return [seg]
     left, right = seg.split(splitter, 1)
-    has_left = any(term in left.lower() for term in METRIC_TERMS)
-    has_right = any(term in right.lower() for term in METRIC_TERMS)
+    flat_terms = sum(METRIC_SYNONYMS.values(), [])
+    has_left = any(term in left.lower() for term in flat_terms)
+    has_right = any(term in right.lower() for term in flat_terms)
     if has_left and has_right:
         pref = re.match(
             r"^\s*(show|find|report|list|give|display|compute|calculate|compare)\b.*?\b(of|for)\b\s*",
@@ -76,9 +105,7 @@ def _maybe_split_metrics_with_and(seg: str) -> List[str]:
         return [_norm(left), _norm(right)]
     return [seg]
 
-
 def _heuristic_split(question: str) -> List[str]:
-    """Heuristic splitter: strong punctuation, compare, metric-aware 'and', step-joiners."""
     q = _pre_normalize(question)
     chunks: List[str] = []
     for sent in SPLIT_PUNCT.split(q):
@@ -91,14 +118,12 @@ def _heuristic_split(question: str) -> List[str]:
                     p = _norm(p)
                     if p:
                         chunks.append(p)
-    # Deduplicate preserving order
     seen = set()
     out: List[str] = []
     for c in chunks:
         if c not in seen:
             out.append(c)
             seen.add(c)
-    # If only one long clause, try conservative dot-split: ". " followed by Capital
     if len(out) == 1:
         extra = re.split(r"(?<=[a-z0-9])\.\s+(?=[A-Z])", out[0])
         extra = [_norm(x) for x in extra if _norm(x)]
@@ -106,12 +131,8 @@ def _heuristic_split(question: str) -> List[str]:
             out = extra
     return out
 
-
 def _parse_json_array(txt: str) -> Optional[List[str]]:
-    """Parse a JSON array of strings; strip code fences and extract the first array found."""
-    # Strip code fences if present
     txt = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", txt, flags=re.I | re.S)
-    # Find a JSON array of strings (allow newlines)
     m = re.search(r'\[\s*(?:"[^"]*"\s*,\s*)*"[^"]*"\s*\]', txt, flags=re.S)
     raw = m.group(0) if m else txt
     try:
@@ -123,7 +144,6 @@ def _parse_json_array(txt: str) -> Optional[List[str]]:
         return None
     return None
 
-
 def _has_strong_boundary(text: str) -> bool:
     t = text.lower()
     if re.search(SPLIT_PUNCT, text):
@@ -134,9 +154,7 @@ def _has_strong_boundary(text: str) -> bool:
         return True
     return False
 
-
 def _is_degenerate_llm_split(original: str, parts: List[str]) -> bool:
-    """Detect over-fragmented LLM splits like ['How many','donors','gave','in the last','90 days']."""
     if not parts or len(parts) <= 1:
         return False
     word_counts = [len(p.split()) for p in parts]
@@ -148,9 +166,8 @@ def _is_degenerate_llm_split(original: str, parts: List[str]) -> bool:
         return True
     return False
 
-
+# --------- LLM providers for splitting ----------
 def _llm_split_ollama(question: str, model: Optional[str]) -> Optional[List[str]]:
-    """Use Ollama (via langchain_ollama) to split into sub-questions; return None on failure."""
     try:
         from langchain_ollama import OllamaLLM
     except Exception:
@@ -158,20 +175,13 @@ def _llm_split_ollama(question: str, model: Optional[str]) -> Optional[List[str]
     try:
         llm = OllamaLLM(model=model or "llama3.1", temperature=0)
         prompt = (
-            "You split user requests into minimal sequential sub-questions.\n"
+            "You split analytics requests into minimal sequential sub-questions.\n"
             "Rules:\n"
-            "- DO NOT split inside a single natural-language clause.\n"
             "- Split only on strong punctuation (; : ? !), step joiners "
             "('and then','then','next','after that','before','using','based on','with','by'),\n"
-            "- Or on 'vs/versus', or when two different metrics/entities are joined by 'and' "
-            "(e.g., 'total donation amount and engagement score').\n"
-            "- Keep each sub-question as a full phrase; never return single words.\n"
+            "- Or on 'vs/versus', or when two different metrics/entities are joined by 'and'.\n"
+            "- Keep each sub-question a full phrase; never single words.\n"
             "- Return ONLY a JSON array of strings.\n"
-            "Examples:\n"
-            'Request: How many donors gave in the last 90 days?\n'
-            'Output: ["How many donors gave in the last 90 days"]\n'
-            'Request: show me the declining of total donation amount and engagement score\n'
-            'Output: ["show me the declining of total donation amount", "show me the declining of engagement score"]\n'
             f"Request: {question}\n"
             "Output:"
         )
@@ -180,15 +190,57 @@ def _llm_split_ollama(question: str, model: Optional[str]) -> Optional[List[str]
     except Exception:
         return None
 
+def _llm_split_openai(question: str, model: Optional[str]) -> Optional[List[str]]:
+    try:
+        from langchain_openai import ChatOpenAI
+    except Exception:
+        return None
+    try:
+        llm = ChatOpenAI(model=model or "gpt-4o-mini", temperature=0)
+        prompt = (
+            "Split the user request into minimal sequential sub-questions for analytics.\n"
+            "Return ONLY a JSON array of strings.\n"
+            f"Request: {question}\nOutput:"
+        )
+        msg = llm.invoke(prompt)
+        txt = getattr(msg, "content", str(msg)).strip()
+        return _parse_json_array(txt)
+    except Exception:
+        return None
+
+def _llm_split_hf(question: str, model: Optional[str]) -> Optional[List[str]]:
+    try:
+        from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
+    except Exception:
+        return None
+    try:
+        endpoint = HuggingFaceEndpoint(repo_id=model or "mistralai/Mixtral-8x7B-Instruct-v0.1", temperature=0)
+        llm = ChatHuggingFace(llm=endpoint)
+        prompt = (
+            "Split the user request into minimal sequential sub-questions for analytics.\n"
+            "Return ONLY a JSON array of strings.\n"
+            f"Request: {question}\nOutput:"
+        )
+        msg = llm.invoke(prompt)
+        txt = getattr(msg, "content", str(msg)).strip()
+        return _parse_json_array(txt)
+    except Exception:
+        return None
+
+def _llm_split(question: str, provider: Optional[str], model: Optional[str]) -> Optional[List[str]]:
+    prov = (provider or "ollama").lower()
+    if prov == "openai":
+        return _llm_split_openai(question, model) or _llm_split_ollama(question, model)
+    if prov in ("hf", "huggingface", "hugging_face"):
+        return _llm_split_hf(question, model) or _llm_split_ollama(question, model)
+    # default ollama
+    return _llm_split_ollama(question, model)
 
 def detect_input_finder(clause: str) -> bool:
     return bool(INPUT_FINDER_PAT.search(clause))
 
-
 def guess_dependencies(idx: int) -> List[str]:
-    # Simple sequential dependency
     return [f"Q{idx-1}"] if idx > 1 else []
-
 
 def build_graph(subqs: List[SubQuestion]) -> nx.DiGraph:
     g = nx.DiGraph()
@@ -200,7 +252,6 @@ def build_graph(subqs: List[SubQuestion]) -> nx.DiGraph:
                 g.add_edge(d, sq.id)
     return g
 
-
 def topo_sorted(g: nx.DiGraph) -> List[SubQuestion]:
     try:
         order = list(nx.topological_sort(g))
@@ -208,33 +259,114 @@ def topo_sorted(g: nx.DiGraph) -> List[SubQuestion]:
     except nx.NetworkXUnfeasible:
         return [g.nodes[n]["obj"] for n in g.nodes]
 
+# -------------------------
+# Domain-aware detection
+# -------------------------
+def detect_timegrain(q: str) -> str:
+    L = _lower(q)
+    for grain, phrases in TIME_GRAINS.items():
+        if any(p in L for p in phrases):
+            return grain
+    return "monthly"
 
+def detect_ops(q: str) -> List[str]:
+    L = _lower(q)
+    ops: List[str] = []
+    for op, phrases in OPERATIONS.items():
+        if any(p in L for p in phrases):
+            ops.append(op)
+    if "decline" in ops and "trend" not in ops:
+        ops.append("trend")
+    if not ops:
+        ops = ["trend"]
+    return ops
+
+def extract_metrics(q: str) -> List[str]:
+    L = _lower(q)
+    found: List[str] = []
+
+    def add(m: str):
+        if m not in found:
+            found.append(m)
+
+    for canon in METRIC_SYNONYMS.keys():
+        if canon.replace("_", " ") in L:
+            add(canon)
+    for canon, syns in METRIC_SYNONYMS.items():
+        if any(s in L for s in syns):
+            add(canon)
+    if "how many" in L and "donor" in L and "donor_count" not in found:
+        add("donor_count")
+    return found
+
+def _build_compute_clause(metric: str, grain: str, ops: List[str]) -> str:
+    base = f"compute {metric} ({grain}) over time and trend"
+    if "decline" in ops:
+        base += " & check decline"
+    elif "increase" in ops:
+        base += " & check increase"
+    return base
+
+def _maybe_add_grouping(q: str, clause: str) -> str:
+    L = _lower(q)
+    if "by state" in L or "across states" in L or "by states" in L:
+        return clause + " (group by state)"
+    return clause
+
+def _has_vs(q: str) -> bool:
+    return bool(re.search(r"\b(vs\.?|versus)\b", _lower(q)))
+
+def _build_summary_clause() -> str:
+    return "summarize combined insights and compare/correlate metrics (highlight simultaneous declines if any)"
+
+# -------------------------
+# Splitter class
+# -------------------------
 class QuestionSplitter:
-    """Heuristic splitter with optional Ollama assist. used_llm=True when Ollama is invoked (even on fallback)."""
-    def __init__(self, try_llm: bool = False, provider: Optional[str] = None, model: Optional[str] = None):
+    """Rule-based splitter with provider-backed LLM splitting when enabled."""
+
+    def __init__(self, try_llm: bool = False, provider: Optional[str] = None, model: Optional[str] = None) -> None:
         self.try_llm = bool(try_llm)
-        # Force Ollama when try_llm is requested; provider is ignored otherwise
-        self.provider = "ollama" if self.try_llm else None
+        self.provider = (provider or "ollama").lower() if provider else "ollama"
         self.model = model
 
     def plan(self, question: str) -> SplitPlan:
         q = _norm(question)
-
         used_llm = False
         clauses: List[str] = []
 
+        # If asked, try LLM-first splitting
         if self.try_llm:
-            # Attempt LLM split first
-            llm_subqs = _llm_split_ollama(q, self.model)
-            used_llm = True
+            llm_subqs = _llm_split(q, self.provider, self.model)
             if llm_subqs and not _is_degenerate_llm_split(q, llm_subqs):
                 clauses = llm_subqs
-            else:
-                # Fallback to heuristic if LLM over-fragments or fails
-                clauses = _heuristic_split(q)
-        else:
-            clauses = _heuristic_split(q)
+                used_llm = True
 
+        # Fallback: domain-aware + heuristics
+        if not clauses:
+            grain = detect_timegrain(q)
+            ops = detect_ops(q)
+            metrics = extract_metrics(q)
+            if metrics:
+                for m in metrics:
+                    clause = _build_compute_clause(m, grain, ops)
+                    clause = _maybe_add_grouping(q, clause)
+                    clauses.append(clause)
+                if len(metrics) > 1 or "compare" in ops or _has_vs(q):
+                    clauses.append(_build_summary_clause())
+            else:
+                clauses = _heuristic_split(q)
+
+        # Last resort: LLM (if enabled) then heuristics
+        if not clauses and self.try_llm:
+            llm_subqs = _llm_split(q, self.provider, self.model)
+            if llm_subqs and not _is_degenerate_llm_split(q, llm_subqs):
+                clauses = llm_subqs
+                used_llm = True
+        if not clauses:
+            clauses = [q]
+
+        # Materialize sub-questions
         subqs: List[SubQuestion] = []
         for idx, clause in enumerate(clauses, 1):
             subqs.append(
@@ -246,6 +378,7 @@ class QuestionSplitter:
                 )
             )
 
+        # Build DAG and order
         g = build_graph(subqs)
         ordered = topo_sorted(g)
         start_nodes = [s.id for s in ordered if g.in_degree(s.id) == 0]
